@@ -1,163 +1,114 @@
-(async function autoClicker() {
-  const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-  const q  = (sel, root = document) => root.querySelector(sel);
-  const qa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+async function ensureStamina() {
+  try {
+    const q  = (sel, root = document) => root.querySelector(sel);
+    const qa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+    const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-  // --- helpers ---
-  function isEnabled(el) {
-    return !!el && el.disabled !== true && el.getAttribute('aria-disabled') !== 'true';
-  }
-
-  function realClick(el) {
-    if (!isEnabled(el)) return false;
-    try {
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      el.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true }));
-      el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true }));
-      el.click();
-      return true;
-    } catch {
-      try { el.click(); return true; } catch { return false; }
+    function isEnabled(el) {
+      return !!el && el.disabled !== true && el.getAttribute?.('aria-disabled') !== 'true';
     }
-  }
-
-  function getEnabledButtonByText(text) {
-    return qa('button').find(b => b.textContent.trim() === text && isEnabled(b)) || null;
-  }
-
-  async function waitForEnabled(selector, timeoutMs = 3000) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      const el = q(selector);
-      if (isEnabled(el)) return el;
-      await delay(100);
+    function setNativeValue(el, value) {
+      try {
+        const proto = Object.getPrototypeOf(el);
+        const desc  = Object.getOwnPropertyDescriptor(proto, 'value');
+        const setter = desc && desc.set;
+        if (setter) setter.call(el, String(value));
+        else el.value = String(value);
+      } catch { el.value = String(value); }
     }
-    return null;
-  }
-
-  async function waitAndClosePopup(text = 'Close', timeoutMs = 5000) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      const btn = getEnabledButtonByText(text);
-      if (btn) {
-        realClick(btn);
-        console.log('Popup closed.');
-        return true;
+    async function waitForEnabled(selector, timeoutMs = 5000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        const el = q(selector);
+        if (isEnabled(el)) return el;
+        await delay(100);
       }
-      await delay(100);
+      return null;
     }
-    return false;
-  }
+    function realClick(el) {
+      if (!isEnabled(el)) return false;
+      try {
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mousedown',   { bubbles: true }));
+        el.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseup',     { bubbles: true }));
+        el.click();
+        return true;
+      } catch {
+        try { el.click(); return true; } catch { return false; }
+      }
+    }
+    async function waitAndClosePopup(text = 'Close', timeoutMs = 7000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        const btn = qa('button').find(b => b.textContent.trim() === text && isEnabled(b));
+        if (btn) { realClick(btn); console.log('Recharge popup closed.'); return true; }
+        await delay(100);
+      }
+      return false;
+    }
 
-  // --- stamina ---
-  function findStaminaBox() {
-    return qa('.top-bar .resources-wrapper .resource-box')
-      .find(box => q('img[src*="stamina"]', box)) || null;
-  }
-  function parseStaminaFromBox(box) {
-    const span = q('.resource-text', box);
-    if (!span) return null;
+    // find stamina box via stamina icon
+    const staminaBox = qa('.top-bar .resources-wrapper .resource-box')
+      .find(box => q('img[src*="stamina"]', box));
+    if (!staminaBox) return;
+
+    // parse "current/max"
+    const span = q('.resource-text', staminaBox);
+    if (!span) return;
     const m = span.textContent.trim().match(/(\d+)\s*\/\s*(\d+)/);
-    if (!m) return null;
-    return { current: parseInt(m[1], 10), max: parseInt(m[2], 10) };
-  }
-  async function ensureStamina() {
-    const box = findStaminaBox(); if (!box) return;
-    const s = parseStaminaFromBox(box); if (!s) return;
-    const { current, max } = s;
-    if (current >= max) return;
+    if (!m) return;
+    const current = parseInt(m[1], 10);
+    const max     = parseInt(m[2], 10);
+    if (!(current < max)) return;
 
-    const need = max - current;
-    const plus = q('img.plus-button', box); if (!plus) return;
+    const need = Math.max(1, max - current);
+    const plusBtn = q('img.plus-button', staminaBox);
+    if (!plusBtn) return;
 
     console.log(`Stamina low (${current}/${max}) → recharging ${need}.`);
-    realClick(plus);
+    realClick(plusBtn);
     await delay(300);
 
-    // wait for the input
+    // wait for input
     let input = null;
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 40; i++) {
       input = q('input.counter-input[type="number"]');
       if (input) break;
       await delay(100);
     }
     if (!input) return;
 
+    // set value (React-safe) and trigger events
     input.focus();
-    input.value = String(need);
+    setNativeValue(input, need);
     input.dispatchEvent(new Event('input',  { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.blur();
+    await delay(150);
 
-    const exchangeBtn = await waitForEnabled('button.menu-energy-btn', 7000);
-    if (!exchangeBtn) return;
+    // enable & click Exchange
+    let exchangeBtn = await waitForEnabled('button.menu-energy-btn', 5000);
+    if (!exchangeBtn) {
+      // fallback: try minimal value 1
+      input.focus();
+      setNativeValue(input, 1);
+      input.dispatchEvent(new Event('input',  { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.blur();
+      exchangeBtn = await waitForEnabled('button.menu-energy-btn', 3000);
+    }
+    if (!exchangeBtn) { console.log('Exchange button did not enable.'); return; }
+
     realClick(exchangeBtn);
     console.log('Exchange button clicked.');
-    await delay(800);
+    await delay(500);
+
+    // NEW: close "Transaction Result" popup (Close button)
+    await waitAndClosePopup('Close', 7000);
+    await delay(300);
+  } catch {
+    console.log('Error in ensureStamina, continuing.');
   }
-
-  // --- main loop ---
-  await delay(300);
-
-  while (true) {
-    const items = qa('.left-scroll-list img');
-    for (const el of items) {
-      // 1) stamina
-      await ensureStamina();
-
-      // 2) activate item
-      realClick(el);
-      await delay(1000);
-
-      const panel = q('.right-detail-panel') || document;
-
-      // buttons (enabled only)
-      const actionBtn = q('.mine-button:not([disabled])', panel);
-      const claimBtn  = actionBtn && actionBtn.textContent.trim() === 'Claim' ? actionBtn : null;
-      const mineBtn   = actionBtn && actionBtn.textContent.trim() === 'Mine'  ? actionBtn : null;
-
-      // Claim
-      if (isEnabled(claimBtn)) {
-        realClick(claimBtn);
-        console.log('Claim button clicked.');
-        await delay(1000);
-        continue;
-      }
-
-      // Mine
-      if (isEnabled(mineBtn)) {
-        realClick(mineBtn);
-        console.log('Mine button clicked.');
-        await delay(10000); // wait for completion/popup
-
-        // Close popup after Mine (if present)
-        await waitAndClosePopup('Close', 5000);
-
-        // Try Repair if it becomes enabled within 3s
-        const repairAfterMine = await waitForEnabled('.right-detail-panel .repair-button:not([disabled])', 3000);
-        if (repairAfterMine) {
-          realClick(repairAfterMine);
-          console.log('Repair button clicked.');
-          await delay(10000); // wait after repair
-
-          // Close popup after Repair (if present)
-          await waitAndClosePopup('Close', 5000);
-        }
-
-        continue;
-      }
-
-      // If Mine is not enabled, try Repair ONLY if enabled
-      const repairBtn = q('.right-detail-panel .repair-button:not([disabled])', panel);
-      if (isEnabled(repairBtn)) {
-        realClick(repairBtn);
-        console.log('Repair button clicked.');
-        await delay(10000); // wait after repair
-
-        // Close popup after Repair (if present)
-        await waitAndClosePopup('Close', 5000);
-      }
-    }
-  }
-})();
+}
